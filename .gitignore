@@ -1,0 +1,3 @@
+__pycache__/
+.env.local
+jarvis_memory.db
