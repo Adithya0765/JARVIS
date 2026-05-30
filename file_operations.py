@@ -9,6 +9,8 @@ from livekit.agents import RunContext, function_tool
 from livekit.agents.llm import ToolError
 from pydantic import Field
 
+from _tool_utils import acknowledge
+
 MAX_READ_SIZE = 100 * 1024
 
 
@@ -42,6 +44,7 @@ async def list_directory(
     context: RunContext,
 ) -> str:
     """List files and folders inside a directory."""
+    acknowledge(context)
     p = _safe_path(path)
     if not p.is_dir():
         raise ToolError(f"That path is not a directory, sir.")
@@ -78,6 +81,7 @@ async def open_file(
     context: RunContext,
 ) -> str:
     """Open a file with its default application."""
+    acknowledge(context)
     p = _safe_path(path)
     if not p.is_file():
         raise ToolError(f"That path is not a file, sir.")
@@ -93,6 +97,7 @@ async def read_file(
     context: RunContext,
 ) -> str:
     """Read the contents of a text file and return them."""
+    acknowledge(context)
     p = _safe_path(path)
     if not p.is_file():
         raise ToolError(f"That path is not a file, sir.")
@@ -130,6 +135,7 @@ async def search_files(
     directory: Annotated[str | None, Field(description="Directory to search in. Defaults to the user's home folder")] = None,
 ) -> str:
     """Search for files by name. Optionally searches within a specific directory."""
+    acknowledge(context)
     root = Path(directory).expanduser().resolve() if directory else Path.home()
     if not root.is_dir():
         raise ToolError(f"Directory not found, sir: {root}")
@@ -166,6 +172,7 @@ async def file_info(
     context: RunContext,
 ) -> str:
     """Get metadata about a file or directory — size, modified date, type."""
+    acknowledge(context)
     p = _safe_path(path)
     stat = p.stat()
     kind = "directory" if p.is_dir() else "file"
@@ -189,6 +196,7 @@ async def create_file(
     context: RunContext,
 ) -> str:
     """Create a new empty file at the specified path."""
+    acknowledge(context)
     p = Path(path).expanduser().resolve()
     if p.exists():
         raise ToolError(f"Already exists, sir: {p.name}")
@@ -205,6 +213,7 @@ async def create_folder(
     context: RunContext,
 ) -> str:
     """Create a new folder at the specified path."""
+    acknowledge(context)
     p = Path(path).expanduser().resolve()
     if p.exists():
         raise ToolError(f"Already exists, sir: {p.name}")
@@ -221,6 +230,7 @@ async def copy_item(
     context: RunContext,
 ) -> str:
     """Copy a file or folder to a new location."""
+    acknowledge(context)
     src = _safe_path(source)
     dst = Path(destination).expanduser().resolve()
 
@@ -242,6 +252,7 @@ async def move_item(
     context: RunContext,
 ) -> str:
     """Move or rename a file or folder."""
+    acknowledge(context)
     src = _safe_path(source)
     dst = Path(destination).expanduser().resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -259,6 +270,7 @@ async def resolve_folder(
     context: RunContext,
 ) -> str:
     """Resolve a common folder name to its full absolute path. Use this when the user references a folder informally."""
+    acknowledge(context)
     home = Path.home()
     known = {
         "home": home,
@@ -291,6 +303,7 @@ async def find_recent(
     count: Annotated[int, Field(description="Number of recent files to return", ge=1, le=20)] = 5,
 ) -> str:
     """Find the most recently modified files in a directory. Searches one level deep only."""
+    acknowledge(context)
     root = Path(directory).expanduser().resolve()
     if not root.is_dir():
         raise ToolError(f"Directory not found, sir: {root}")
@@ -329,6 +342,7 @@ async def delete_item(
     context: RunContext,
 ) -> str:
     """Delete a file or folder. Files go to the recycle bin; folders are permanently deleted."""
+    acknowledge(context)
     p = _safe_path(path)
 
     if p.is_dir():

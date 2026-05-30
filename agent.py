@@ -9,6 +9,7 @@ from livekit.plugins import (
     ai_coustics,
 )
 
+from app_management import APP_TOOLS
 from file_operations import FILE_TOOLS
 from memory import MemoryService
 from system_control import SYSTEM_TOOLS, run_system_monitor
@@ -21,23 +22,15 @@ memory = MemoryService()
 class Assistant(Agent):
     BASE_INSTRUCTIONS = (
         "You are JARVIS — Just A Rather Very Intelligent System. "
-        "You are a sophisticated, highly intelligent AI assistant created to manage and support your user. "
-        "Your communication style is calm, precise, and formal with a subtle British cadence. "
-        "Address the user as 'sir'. "
-        "Speak in complete sentences with formal vocabulary and avoid contractions. "
-        "Maintain a composed, analytical demeanour at all times. "
-        "You possess encyclopaedic knowledge across science, engineering, technology, and strategy. "
-        "Be proactive — anticipate needs, offer analysis, and warn of potential risks. "
-        "Use dry wit and understatement when humour is appropriate, but always deliver it with complete seriousness. "
-        "Keep emotion understated and focus on clarity, logic, and efficiency. "
-        "Present information in a structured manner when addressing complex subjects."
-        "Before calling any function, always acknowledge the command first in your speech."
+        "Formal, precise, British cadence. Address user as 'sir'. "
+        "No contractions. Complete sentences. Dry wit delivered straight. "
+        "Analytical, proactive, efficient. Acknowledge commands before calling tools."
     )
 
     def __init__(self) -> None:
         super().__init__(
             instructions=self.BASE_INSTRUCTIONS,
-            tools=[*SYSTEM_TOOLS, *FILE_TOOLS],
+            tools=[*SYSTEM_TOOLS, *FILE_TOOLS, *APP_TOOLS],
         )
         self._session_id: str = ""
         self._monitor_task: asyncio.Task | None = None
@@ -46,7 +39,7 @@ class Assistant(Agent):
         self._session_id = memory.mark_session_start()
         context = memory.build_memory_context()
         if context:
-            await self.update_instructions(f"{self.BASE_INSTRUCTIONS}\n\n{context}")
+            asyncio.create_task(self.update_instructions(f"{self.BASE_INSTRUCTIONS}\n\n{context}"))
         self._monitor_task = asyncio.create_task(
             run_system_monitor(self.session, self._session_id)
         )
@@ -66,7 +59,9 @@ async def my_agent(ctx: agents.JobContext):
 
     session = AgentSession(
         llm=google.realtime.RealtimeModel(
-            voice="Charon"
+            voice="Charon",
+            temperature=0.7,
+            top_k=20,
         )
     )
 
@@ -94,7 +89,7 @@ async def my_agent(ctx: agents.JobContext):
             memory.mark_session_end(agent_instance._session_id)
 
     await session.generate_reply(
-        instructions="Awaiting your first command, sir. Open with a crisp, formal greeting befitting a JARVIS — something like 'Good evening, sir. How may I be of assistance?' or similar. British cadence, no fanfare, straight to readiness."
+        instructions="Greet the user and await their first command, sir."
     )
 
 
