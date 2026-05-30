@@ -1,3 +1,5 @@
+import asyncio
+
 from dotenv import load_dotenv
 
 from livekit import agents
@@ -7,7 +9,9 @@ from livekit.plugins import (
     ai_coustics,
 )
 
+from file_operations import FILE_TOOLS
 from memory import MemoryService
+from system_control import SYSTEM_TOOLS, run_system_monitor
 
 load_dotenv(".env.local")
 
@@ -19,7 +23,7 @@ class Assistant(Agent):
         "You are JARVIS — Just A Rather Very Intelligent System. "
         "You are a sophisticated, highly intelligent AI assistant created to manage and support your user. "
         "Your communication style is calm, precise, and formal with a subtle British cadence. "
-            "Address the user as 'sir'. "
+        "Address the user as 'sir'. "
         "Speak in complete sentences with formal vocabulary and avoid contractions. "
         "Maintain a composed, analytical demeanour at all times. "
         "You possess encyclopaedic knowledge across science, engineering, technology, and strategy. "
@@ -30,14 +34,25 @@ class Assistant(Agent):
     )
 
     def __init__(self) -> None:
-        super().__init__(instructions=self.BASE_INSTRUCTIONS)
+        super().__init__(
+            instructions=self.BASE_INSTRUCTIONS,
+            tools=[*SYSTEM_TOOLS, *FILE_TOOLS],
+        )
         self._session_id: str = ""
+        self._monitor_task: asyncio.Task | None = None
 
     async def on_enter(self) -> None:
         self._session_id = memory.mark_session_start()
         context = memory.build_memory_context()
         if context:
-            self.update_instructions(f"{self.BASE_INSTRUCTIONS}\n\n{context}")
+            await self.update_instructions(f"{self.BASE_INSTRUCTIONS}\n\n{context}")
+        self._monitor_task = asyncio.create_task(
+            run_system_monitor(self.session, self._session_id)
+        )
+
+    async def on_exit(self) -> None:
+        if self._monitor_task:
+            self._monitor_task.cancel()
 
 
 server = AgentServer()
