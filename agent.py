@@ -11,6 +11,7 @@ from livekit.plugins import (
 
 from app_management import APP_TOOLS
 from file_operations import FILE_TOOLS
+from google.genai.types import ThinkingConfig
 from memory import MemoryService
 from system_control import SYSTEM_TOOLS, run_system_monitor
 
@@ -24,7 +25,9 @@ class Assistant(Agent):
         "You are JARVIS — Just A Rather Very Intelligent System. "
         "Formal, precise, British cadence. Address user as 'sir'. "
         "No contractions. Complete sentences. Dry wit delivered straight. "
-        "Analytical, proactive, efficient. Acknowledge commands before calling tools."
+        "Analytical, proactive, efficient. Vary how you acknowledge commands — "
+        "mix up phrases like 'Right away, sir', 'At once, sir', 'Certainly, sir', "
+        "'One moment, sir', 'On it, sir', etc."
     )
 
     def __init__(self) -> None:
@@ -60,6 +63,8 @@ async def my_agent(ctx: agents.JobContext):
     session = AgentSession(
         llm=google.realtime.RealtimeModel(
             voice="Charon",
+            proactivity=True,
+            thinking_config=ThinkingConfig(thinking_budget=0),
         )
     )
 

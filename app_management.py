@@ -1,8 +1,9 @@
 import asyncio
+import json
 import os
-import re
 import subprocess
-import time
+from concurrent.futures import ThreadPoolExecutor
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Annotated
 
@@ -11,128 +12,265 @@ from livekit.agents import RunContext, function_tool
 from livekit.agents.llm import ToolError
 from pydantic import Field
 
-from _tool_utils import acknowledge
+_EXECUTOR = ThreadPoolExecutor(max_workers=6, thread_name_prefix="app_search")
+_app_map: dict[str, str] | None = None
+_app_map_lock = asyncio.Lock()
+
+_START_MENU_PS1 = r'''
+$shortcuts = @{}
+$paths = @(
+    "$env:APPDATA\Microsoft\Windows\Start Menu\Programs",
+    "$env:ProgramData\Microsoft\Windows\Start Menu\Programs"
+)
+foreach ($path in $paths) {
+    if (Test-Path $path) {
+        Get-ChildItem -Path $path -Filter *.lnk -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
+            $shell = New-Object -ComObject WScript.Shell
+            $shortcut = $shell.CreateShortcut($_.FullName)
+            $target = $shortcut.TargetPath
+            if ($target -and $target -like '*.exe') {
+                $shortcuts[$_.BaseName.ToLower()] = $target
+            }
+        }
+    }
+}
+Write-Output (ConvertTo-Json $shortcuts)
+'''
+
+_REGISTRY_PS1 = r'''
+$apps = @{}
+$paths = @(
+    "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*",
+    "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*"
+)
+foreach ($path in $paths) {
+    Get-ItemProperty -Path $path -ErrorAction SilentlyContinue | ForEach-Object {
+        $name = $_.DisplayName
+        $loc = $_.InstallLocation
+        $icon = $_.DisplayIcon
+        if ($name) {
+            if ($loc -and (Test-Path $loc)) {
+                $loc = $loc.TrimEnd('\')
+                if ($loc -like '*.exe') {
+                    $apps[$name.ToLower()] = $loc
+                } elseif (Test-Path $loc -PathType Container) {
+                    $exes = Get-ChildItem -Path $loc -Filter *.exe -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer }
+                    if ($exes) {
+                        $words = $name.ToLower() -split '\s+|[-_]'
+                        $best = $exes | Sort-Object Length | Select-Object -First 1
+                        foreach ($e in $exes) {
+                            $estem = $e.BaseName.ToLower()
+                            foreach ($w in $words) {
+                                if ($w.Length -gt 2 -and $estem -match [regex]::Escape($w)) {
+                                    $best = $e
+                                    break
+                                }
+                            }
+                        }
+                        $apps[$name.ToLower()] = $best.FullName
+                    }
+                }
+            } elseif ($icon -and $icon -like '*.exe*') {
+                $exePath = $icon -replace ',.*$', ''
+                if (Test-Path $exePath) { $apps[$name.ToLower()] = $exePath }
+            }
+        }
+    }
+}
+Write-Output (ConvertTo-Json $apps)
+'''
 
 
-def _find_windows_executable(name: str) -> str | None:
-    name_lower = name.lower().strip()
-    if not name_lower.endswith(".exe"):
-        name_lower += ".exe"
-
-    candidates = set()
-
-    def _add(p: Path) -> None:
-        if p.exists() and p.is_file():
-            candidates.add(str(p.resolve()))
-
-    # 1. Direct path
-    p = Path(name_lower)
-    if p.is_absolute():
-        _add(p)
-    else:
-        _add(Path.cwd() / name_lower)
-
-    # 2. PATH lookup via where.exe
+def _run_ps(script: str, timeout: int = 15) -> dict[str, str]:
     try:
         result = subprocess.run(
-            ["where.exe", name_lower],
-            capture_output=True, text=True, timeout=5,
+            ["powershell", "-NoProfile", "-Command", script],
+            capture_output=True, text=True, timeout=timeout,
         )
-        for line in result.stdout.strip().splitlines():
-            line = line.strip()
-            if line and Path(line).is_file():
-                candidates.add(line)
+        out = result.stdout.strip()
+        if not out:
+            return {}
+        return json.loads(out)
     except Exception:
-        pass
+        return {}
 
-    # 3. Start Menu / Common install locations
+
+def _build_app_map() -> dict[str, str]:
+    sm = _run_ps(_START_MENU_PS1)
+    reg = _run_ps(_REGISTRY_PS1)
+    merged = {}
+    merged.update(reg)
+    merged.update(sm)
+    return merged
+
+
+async def _ensure_app_map():
+    global _app_map
+    if _app_map is not None:
+        return
+    async with _app_map_lock:
+        if _app_map is not None:
+            return
+        loop = asyncio.get_event_loop()
+        _app_map = await loop.run_in_executor(_EXECUTOR, _build_app_map)
+
+
+def _search_directories(stem: str) -> set[str]:
+    candidates = set()
     search_roots = [
         Path(os.environ.get("ProgramFiles", "C:\\Program Files")),
         Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")),
         Path(os.environ.get("LocalAppData", Path.home() / "AppData" / "Local")),
         Path(os.environ.get("AppData", Path.home() / "AppData" / "Roaming")),
-        Path.home() / "AppData" / "Local" / "Microsoft" / "WindowsApps",
     ]
-
-    stem = Path(name_lower).stem
     for root in search_roots:
         if not root.exists():
             continue
         try:
-            for exe in root.rglob("*.exe"):
-                if stem in exe.stem.lower():
-                    candidates.add(str(exe.resolve()))
-                    if len(candidates) >= 10:
-                        break
+            for entry in root.iterdir():
+                if entry.is_file() and entry.suffix.lower() == ".exe" and stem in entry.stem.lower():
+                    candidates.add(str(entry.resolve()))
+                elif entry.is_dir():
+                    try:
+                        for sub in entry.iterdir():
+                            if sub.is_file() and sub.suffix.lower() == ".exe" and stem in sub.stem.lower():
+                                candidates.add(str(sub.resolve()))
+                    except PermissionError:
+                        pass
         except PermissionError:
             pass
+    return candidates
 
-    # 4. App Paths registry via PowerShell
-    try:
-        script = (
-            f"$path = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{name_lower}' -ErrorAction SilentlyContinue).'(default)'; "
-            f"if ($path) {{ Write-Output $path }}"
-        )
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True, text=True, timeout=5,
-        )
-        reg_path = result.stdout.strip()
-        if reg_path and Path(reg_path).is_file():
-            candidates.add(reg_path)
-    except Exception:
-        pass
+
+async def _find_exe(name: str) -> str | None:
+    name_lower = name.lower().strip()
+    has_ext = name_lower.endswith(".exe")
+    exe_name = name_lower if has_ext else name_lower + ".exe"
+    stem = Path(exe_name).stem
+
+    candidates: set[str] = set()
+
+    def _add(p: Path):
+        if p.exists() and p.is_file():
+            candidates.add(str(p.resolve()))
+
+    loop = asyncio.get_event_loop()
+
+    # 1. Direct path
+    p = Path(exe_name)
+    if p.is_absolute():
+        _add(p)
+    else:
+        _add(Path.cwd() / exe_name)
+
+    # 2. App name mapping (fuzzy match display names from Start Menu + Registry)
+    await _ensure_app_map()
+
+    fuzzy_path = None
+    if _app_map:
+        nl = name_lower
+        if nl in _app_map:
+            fuzzy_path = _app_map[nl]
+        else:
+            for key, val in _app_map.items():
+                if nl in key or key in nl:
+                    fuzzy_path = val
+                    break
+            if fuzzy_path is None:
+                nl_words = set(nl.split())
+                best_ratio = 0.6
+                best_key = None
+                for key in _app_map:
+                    key_words = set(key.split())
+                    overlap = len(nl_words & key_words)
+                    if overlap > 0 and overlap >= len(nl_words) * 0.5:
+                        fuzzy_path = _app_map[key]
+                        break
+                    ratio = SequenceMatcher(None, nl, key).ratio()
+                    if ratio > best_ratio:
+                        best_ratio = ratio
+                        best_key = key
+                if fuzzy_path is None and best_key:
+                    fuzzy_path = _app_map[best_key]
+        if fuzzy_path:
+            _add(Path(fuzzy_path))
+
+    # 3. where.exe (PATH lookup) + directory search in parallel
+    def _where():
+        try:
+            result = subprocess.run(
+                ["where.exe", exe_name],
+                capture_output=True, text=True, timeout=3,
+            )
+            for line in result.stdout.strip().splitlines():
+                line = line.strip()
+                if line and Path(line).is_file():
+                    candidates.add(line)
+        except Exception:
+            pass
+
+    def _windowsapps():
+        winapps = Path.home() / "AppData" / "Local" / "Microsoft" / "WindowsApps"
+        if winapps.exists():
+            try:
+                for entry in winapps.iterdir():
+                    if entry.is_file() and entry.suffix.lower() == ".exe" and stem in entry.stem.lower():
+                        candidates.add(str(entry.resolve()))
+            except (PermissionError, OSError):
+                pass
+
+    def _apppaths():
+        try:
+            script = (
+                f"$path = (Get-ItemProperty -Path 'Registry::HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\{exe_name}' -ErrorAction SilentlyContinue).'(default)'; "
+                f"if ($path) {{ Write-Output $path }}"
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", script],
+                capture_output=True, text=True, timeout=3,
+            )
+            reg_path = result.stdout.strip()
+            if reg_path and Path(reg_path).is_file():
+                candidates.add(reg_path)
+        except Exception:
+            pass
+
+    if not has_ext:
+        dir_task = loop.run_in_executor(_EXECUTOR, _search_directories, stem)
+        where_task = loop.run_in_executor(_EXECUTOR, _where)
+    else:
+        dir_task = loop.run_in_executor(_EXECUTOR, _search_directories, stem)
+        where_task = loop.run_in_executor(_EXECUTOR, _where)
+
+    winapps_task = loop.run_in_executor(_EXECUTOR, _windowsapps)
+    apppaths_task = loop.run_in_executor(_EXECUTOR, _apppaths)
+
+    await asyncio.gather(dir_task, where_task, winapps_task, apppaths_task)
 
     if candidates:
         return min(candidates, key=lambda p: (
             0 if stem in p.lower() else 1,
             len(p),
         ))
-    return None
 
-
-def _window_search(title_pattern: str) -> list[int]:
-    import ctypes
-    from ctypes import wintypes
-
-    EnumWindows = ctypes.windll.user32.EnumWindows
-    GetWindowText = ctypes.windll.user32.GetWindowTextW
-    IsWindowVisible = ctypes.windll.user32.IsWindowVisible
-    GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
-
-    titles = []
-
-    def _enum_callback(hwnd, _lparam):
-        if IsWindowVisible(hwnd):
-            length = GetWindowTextLength(hwnd)
-            if length > 0:
-                buf = ctypes.create_unicode_buffer(length + 1)
-                GetWindowText(hwnd, buf, length + 1)
-                if title_pattern.lower() in buf.value.lower():
-                    titles.append(hwnd)
-        return True
-
-    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.LPARAM)
-    EnumWindows(WNDENUMPROC(_enum_callback), 0)
-    return titles
+    return fuzzy_path if fuzzy_path and Path(fuzzy_path).is_file() else None
 
 
 # ─── tool: launch_app ─────────────────────────────────────────────────────
 
 @function_tool()
 async def launch_app(
-    name: Annotated[str, Field(description="Name of the application to launch (e.g. 'notepad', 'chrome', 'spotify'). Do NOT include the full path.")],
+    name: Annotated[str, Field(description="App name")],
     context: RunContext,
 ) -> str:
-    """Launch any application installed on the system by name. Searches PATH, Start Menu, and common install locations."""
-    acknowledge(context)
-    exe_path = _find_windows_executable(name)
+    """Launch any installed app by name."""
+    exe_path = await _find_exe(name)
     if exe_path is None:
         raise ToolError(
             f"I could not find '{name}' installed on this system, sir. "
             "Try providing the full path to the executable."
         )
-
     try:
         subprocess.Popen([exe_path], close_fds=True)
         return f"Launching {Path(exe_path).stem}, sir."
@@ -145,10 +283,9 @@ async def launch_app(
 @function_tool()
 async def list_processes(
     context: RunContext,
-    filter_name: Annotated[str | None, Field(description="Optional filter to find specific processes by name (e.g. 'chrome', 'python')")] = None,
+    filter_name: Annotated[str | None, Field(description="Process name filter")] = None,
 ) -> str:
-    """List running processes, optionally filtered by name."""
-    acknowledge(context)
+    """List running processes."""
     proc_list = []
     for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_percent"]):
         try:
@@ -157,13 +294,11 @@ async def list_processes(
             proc_list.append(p.info)
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             pass
-
     if not proc_list:
-        msg = f"No running processes found"
+        msg = "No running processes found"
         if filter_name:
             msg += f" matching '{filter_name}'"
         return msg + ", sir."
-
     proc_list.sort(key=lambda x: x["memory_percent"] or 0, reverse=True)
     top = proc_list[:20]
     lines = [f"{len(proc_list)} process{'es' if len(proc_list) > 1 else ''} running"
@@ -180,11 +315,10 @@ async def list_processes(
 @function_tool()
 async def kill_process(
     context: RunContext,
-    pid: Annotated[int | None, Field(description="Process ID to terminate")] = None,
-    name: Annotated[str | None, Field(description="Process name to terminate (e.g. 'notepad.exe')")] = None,
+    pid: Annotated[int | None, Field(description="PID to kill")] = None,
+    name: Annotated[str | None, Field(description="Process name to kill")] = None,
 ) -> str:
-    """Terminate a running process by PID or by name."""
-    acknowledge(context)
+    """Kill process by PID or name."""
     if pid is not None:
         try:
             p = psutil.Process(pid)
@@ -194,7 +328,6 @@ async def kill_process(
             raise ToolError(f"No process with PID {pid} found, sir.")
         except psutil.AccessDenied:
             raise ToolError(f"Access denied terminating PID {pid}, sir.")
-
     if name is not None:
         killed = []
         for p in psutil.process_iter(["pid", "name"]):
@@ -207,7 +340,6 @@ async def kill_process(
         if killed:
             return f"Terminated {len(killed)} process{'es' if len(killed) > 1 else ''}: {', '.join(killed)}, sir."
         raise ToolError(f"No running process found matching '{name}', sir.")
-
     raise ToolError("Specify either a PID or a process name to kill, sir.")
 
 
@@ -215,21 +347,38 @@ async def kill_process(
 
 @function_tool()
 async def switch_window(
-    name: Annotated[str, Field(description="Application name or window title to bring to front (e.g. 'chrome', 'notepad')")],
+    name: Annotated[str, Field(description="Window/app name")],
     context: RunContext,
 ) -> str:
-    """Bring an application window to the foreground."""
-    acknowledge(context)
+    """Bring window to foreground."""
     import ctypes
-    handles = _window_search(name)
-    if not handles:
-        raise ToolError(f"No visible window found matching '{name}', sir.")
+    from ctypes import wintypes
 
-    for hwnd in handles:
+    EnumWindows = ctypes.windll.user32.EnumWindows
+    GetWindowText = ctypes.windll.user32.GetWindowTextW
+    IsWindowVisible = ctypes.windll.user32.IsWindowVisible
+    GetWindowTextLength = ctypes.windll.user32.GetWindowTextLengthW
+
+    titles = []
+    def _enum_callback(hwnd, _lparam):
+        if IsWindowVisible(hwnd):
+            length = GetWindowTextLength(hwnd)
+            if length > 0:
+                buf = ctypes.create_unicode_buffer(length + 1)
+                GetWindowText(hwnd, buf, length + 1)
+                if name.lower() in buf.value.lower():
+                    titles.append(hwnd)
+        return True
+
+    WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.LPARAM)
+    EnumWindows(WNDENUMPROC(_enum_callback), 0)
+
+    if not titles:
+        raise ToolError(f"No visible window found matching '{name}', sir.")
+    for hwnd in titles:
         ctypes.windll.user32.ShowWindow(hwnd, 9)
         ctypes.windll.user32.SetForegroundWindow(hwnd)
         return f"Switching to {name}, sir."
-
     raise ToolError(f"Could not switch to '{name}', sir.")
 
 
@@ -237,8 +386,7 @@ async def switch_window(
 
 @function_tool()
 async def window_minimize(context: RunContext) -> str:
-    """Minimise the currently active window."""
-    acknowledge(context)
+    """Minimise active window."""
     import ctypes
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     ctypes.windll.user32.ShowWindow(hwnd, 6)
@@ -249,8 +397,7 @@ async def window_minimize(context: RunContext) -> str:
 
 @function_tool()
 async def window_maximize(context: RunContext) -> str:
-    """Maximise the currently active window."""
-    acknowledge(context)
+    """Maximise active window."""
     import ctypes
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     ctypes.windll.user32.ShowWindow(hwnd, 3)
@@ -261,8 +408,7 @@ async def window_maximize(context: RunContext) -> str:
 
 @function_tool()
 async def window_close(context: RunContext) -> str:
-    """Close the currently active window."""
-    acknowledge(context)
+    """Close active window."""
     import ctypes
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)

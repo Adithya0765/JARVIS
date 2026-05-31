@@ -10,7 +10,6 @@ from livekit.agents import RunContext, function_tool
 from livekit.agents.llm import ToolError
 from pydantic import Field
 
-from _tool_utils import acknowledge
 
 try:
     from comtypes import CLSCTX_ALL
@@ -46,8 +45,7 @@ def _get_audio_interface():
 
 @function_tool()
 async def system_status(context: RunContext) -> str:
-    """Report the current system status including OS, uptime, CPU, memory, and disk usage."""
-    acknowledge(context)
+    """System status: OS, uptime, CPU, RAM, disk."""
     cpu = psutil.cpu_percent(interval=0.5)
     mem = psutil.virtual_memory()
     disk = psutil.disk_usage("/")
@@ -69,8 +67,7 @@ async def system_status(context: RunContext) -> str:
 
 @function_tool()
 async def battery_status(context: RunContext) -> str:
-    """Report the battery percentage and charging status."""
-    acknowledge(context)
+    """Battery level and charging state."""
     batt = psutil.sensors_battery()
     if batt is None:
         return "No battery detected, sir. The system is running on direct power."
@@ -82,8 +79,7 @@ async def battery_status(context: RunContext) -> str:
 
 @function_tool()
 async def lock_screen(context: RunContext) -> str:
-    """Lock the workstation immediately."""
-    acknowledge(context)
+    """Lock the workstation."""
     ctypes.windll.user32.LockWorkStation()
     return "Workstation locked, sir."
 
@@ -92,8 +88,7 @@ async def lock_screen(context: RunContext) -> str:
 
 @function_tool()
 async def shutdown(context: RunContext) -> str:
-    """Shut down the system. User will be asked to confirm via conversation."""
-    acknowledge(context)
+    """Shut down the system."""
     subprocess.Popen(["shutdown", "/s", "/t", "3"], close_fds=True)
     return "Shutting down in 3 seconds, sir."
 
@@ -102,8 +97,7 @@ async def shutdown(context: RunContext) -> str:
 
 @function_tool()
 async def restart(context: RunContext) -> str:
-    """Restart the system. User will be asked to confirm via conversation."""
-    acknowledge(context)
+    """Restart the system."""
     subprocess.Popen(["shutdown", "/r", "/t", "3"], close_fds=True)
     return "Restarting in 3 seconds, sir."
 
@@ -112,8 +106,7 @@ async def restart(context: RunContext) -> str:
 
 @function_tool()
 async def hibernate(context: RunContext) -> str:
-    """Hibernate the system. Saves the current session to disk and powers off."""
-    acknowledge(context)
+    """Hibernate the system."""
     ctypes.windll.powrprof.SetSuspendState(1, 1, 0)
     return "Hibernating, sir."
 
@@ -122,8 +115,7 @@ async def hibernate(context: RunContext) -> str:
 
 @function_tool()
 async def volume_get(context: RunContext) -> str:
-    """Read the current system volume level."""
-    acknowledge(context)
+    """Get system volume level."""
     try:
         vol = _get_audio_interface()
         level = vol.GetMasterVolumeLevelScalar() * 100
@@ -140,11 +132,10 @@ async def volume_get(context: RunContext) -> str:
 
 @function_tool()
 async def volume_set(
-    level: Annotated[int, Field(description="Volume level from 0 to 100", ge=0, le=100)],
+    level: Annotated[int, Field(description="0-100", ge=0, le=100)],
     context: RunContext,
 ) -> str:
-    """Set the system volume to a specific level between 0 and 100."""
-    acknowledge(context)
+    """Set volume 0-100."""
     try:
         vol = _get_audio_interface()
         vol.SetMasterVolumeLevelScalar(level / 100.0, None)
@@ -159,8 +150,7 @@ async def volume_set(
 
 @function_tool()
 async def volume_mute(context: RunContext) -> str:
-    """Toggle the system mute state on or off."""
-    acknowledge(context)
+    """Toggle system mute."""
     try:
         vol = _get_audio_interface()
         current = vol.GetMute()
@@ -177,11 +167,10 @@ async def volume_mute(context: RunContext) -> str:
 
 @function_tool()
 async def brightness_set(
-    level: Annotated[int, Field(description="Brightness level from 0 to 100", ge=0, le=100)],
+    level: Annotated[int, Field(description="0-100", ge=0, le=100)],
     context: RunContext,
 ) -> str:
-    """Set the display brightness to a specific level between 0 and 100."""
-    acknowledge(context)
+    """Set brightness 0-100."""
     try:
         script = (
             f"$m = Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightnessMethods; "
@@ -197,8 +186,7 @@ async def brightness_set(
 
 @function_tool()
 async def brightness_get(context: RunContext) -> str:
-    """Read the current display brightness level."""
-    acknowledge(context)
+    """Get current brightness."""
     try:
         result = _run_powershell(
             "(Get-CimInstance -Namespace root/WMI -ClassName WmiMonitorBrightness).CurrentBrightness"
@@ -214,7 +202,7 @@ async def brightness_get(context: RunContext) -> str:
 
 @function_tool()
 async def current_time(context: RunContext) -> str:
-    """Tell the current date and local time."""
+    """Current date and time."""
     now = time.localtime()
     formatted = time.strftime("%A, %d %B %Y at %I:%M %p", now)
     return f"It is {formatted}, sir."

@@ -9,7 +9,6 @@ from livekit.agents import RunContext, function_tool
 from livekit.agents.llm import ToolError
 from pydantic import Field
 
-from _tool_utils import acknowledge
 
 MAX_READ_SIZE = 100 * 1024
 
@@ -40,11 +39,10 @@ def _format_time(t: float) -> str:
 
 @function_tool()
 async def list_directory(
-    path: Annotated[str, Field(description="Absolute path to the directory")],
+    path: Annotated[str, Field(description="Directory path")],
     context: RunContext,
 ) -> str:
-    """List files and folders inside a directory."""
-    acknowledge(context)
+    """List directory contents."""
     p = _safe_path(path)
     if not p.is_dir():
         raise ToolError(f"That path is not a directory, sir.")
@@ -77,11 +75,10 @@ async def list_directory(
 
 @function_tool()
 async def open_file(
-    path: Annotated[str, Field(description="Absolute path to the file")],
+    path: Annotated[str, Field(description="File path")],
     context: RunContext,
 ) -> str:
-    """Open a file with its default application."""
-    acknowledge(context)
+    """Open file with default app."""
     p = _safe_path(path)
     if not p.is_file():
         raise ToolError(f"That path is not a file, sir.")
@@ -93,11 +90,10 @@ async def open_file(
 
 @function_tool()
 async def read_file(
-    path: Annotated[str, Field(description="Absolute path to the file")],
+    path: Annotated[str, Field(description="File path")],
     context: RunContext,
 ) -> str:
-    """Read the contents of a text file and return them."""
-    acknowledge(context)
+    """Read text file contents."""
     p = _safe_path(path)
     if not p.is_file():
         raise ToolError(f"That path is not a file, sir.")
@@ -130,12 +126,11 @@ async def read_file(
 
 @function_tool()
 async def search_files(
-    query: Annotated[str, Field(description="Filename or content to search for")],
+    query: Annotated[str, Field(description="Search query")],
     context: RunContext,
-    directory: Annotated[str | None, Field(description="Directory to search in. Defaults to the user's home folder")] = None,
+    directory: Annotated[str | None, Field(description="Search directory (default: home)")] = None,
 ) -> str:
-    """Search for files by name. Optionally searches within a specific directory."""
-    acknowledge(context)
+    """Search files by name."""
     root = Path(directory).expanduser().resolve() if directory else Path.home()
     if not root.is_dir():
         raise ToolError(f"Directory not found, sir: {root}")
@@ -168,11 +163,10 @@ async def search_files(
 
 @function_tool()
 async def file_info(
-    path: Annotated[str, Field(description="Absolute path to the file or directory")],
+    path: Annotated[str, Field(description="File path or directory")],
     context: RunContext,
 ) -> str:
-    """Get metadata about a file or directory — size, modified date, type."""
-    acknowledge(context)
+    """File/directory metadata."""
     p = _safe_path(path)
     stat = p.stat()
     kind = "directory" if p.is_dir() else "file"
@@ -192,11 +186,10 @@ async def file_info(
 
 @function_tool()
 async def create_file(
-    path: Annotated[str, Field(description="Absolute path where to create the file")],
+    path: Annotated[str, Field(description="File path to create")],
     context: RunContext,
 ) -> str:
-    """Create a new empty file at the specified path."""
-    acknowledge(context)
+    """Create empty file."""
     p = Path(path).expanduser().resolve()
     if p.exists():
         raise ToolError(f"Already exists, sir: {p.name}")
@@ -209,11 +202,10 @@ async def create_file(
 
 @function_tool()
 async def create_folder(
-    path: Annotated[str, Field(description="Absolute path where to create the folder")],
+    path: Annotated[str, Field(description="Folder path to create")],
     context: RunContext,
 ) -> str:
-    """Create a new folder at the specified path."""
-    acknowledge(context)
+    """Create folder."""
     p = Path(path).expanduser().resolve()
     if p.exists():
         raise ToolError(f"Already exists, sir: {p.name}")
@@ -225,12 +217,11 @@ async def create_folder(
 
 @function_tool()
 async def copy_item(
-    source: Annotated[str, Field(description="Absolute path of the source file or folder")],
-    destination: Annotated[str, Field(description="Absolute path of the destination")],
+    source: Annotated[str, Field(description="Source path")],
+    destination: Annotated[str, Field(description="Destination path")],
     context: RunContext,
 ) -> str:
-    """Copy a file or folder to a new location."""
-    acknowledge(context)
+    """Copy file or folder."""
     src = _safe_path(source)
     dst = Path(destination).expanduser().resolve()
 
@@ -247,12 +238,11 @@ async def copy_item(
 
 @function_tool()
 async def move_item(
-    source: Annotated[str, Field(description="Absolute path of the source file or folder")],
-    destination: Annotated[str, Field(description="Absolute path of the destination")],
+    source: Annotated[str, Field(description="Source path")],
+    destination: Annotated[str, Field(description="Destination path")],
     context: RunContext,
 ) -> str:
-    """Move or rename a file or folder."""
-    acknowledge(context)
+    """Move/rename file or folder."""
     src = _safe_path(source)
     dst = Path(destination).expanduser().resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
@@ -265,12 +255,11 @@ async def move_item(
 @function_tool()
 async def resolve_folder(
     name: Annotated[str, Field(
-        description="Common folder name — e.g. downloads, documents, desktop, pictures, music, videos, home, root",
+        description="Folder name (downloads, documents, etc)",
     )],
     context: RunContext,
 ) -> str:
-    """Resolve a common folder name to its full absolute path. Use this when the user references a folder informally."""
-    acknowledge(context)
+    """Resolve folder name to path."""
     home = Path.home()
     known = {
         "home": home,
@@ -298,12 +287,11 @@ async def resolve_folder(
 @function_tool()
 async def find_recent(
     context: RunContext,
-    directory: Annotated[str, Field(description="Directory to search in. Use resolve_folder for common names first.")],
-    pattern: Annotated[str | None, Field(description="Optional filename filter (case-insensitive, e.g. 'report', '.pdf', 'photo')")] = None,
-    count: Annotated[int, Field(description="Number of recent files to return", ge=1, le=20)] = 5,
+    directory: Annotated[str, Field(description="Directory to search")],
+    pattern: Annotated[str | None, Field(description="Filename filter")] = None,
+    count: Annotated[int, Field(description="File count", ge=1, le=20)] = 5,
 ) -> str:
-    """Find the most recently modified files in a directory. Searches one level deep only."""
-    acknowledge(context)
+    """Recent files in directory."""
     root = Path(directory).expanduser().resolve()
     if not root.is_dir():
         raise ToolError(f"Directory not found, sir: {root}")
@@ -338,11 +326,10 @@ async def find_recent(
 
 @function_tool()
 async def delete_item(
-    path: Annotated[str, Field(description="Absolute path of the file or folder to delete")],
+    path: Annotated[str, Field(description="Path to delete")],
     context: RunContext,
 ) -> str:
-    """Delete a file or folder. Files go to the recycle bin; folders are permanently deleted."""
-    acknowledge(context)
+    """Delete file or folder."""
     p = _safe_path(path)
 
     if p.is_dir():
