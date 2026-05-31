@@ -210,6 +210,16 @@ async def brightness_get(context: RunContext) -> str:
         raise ToolError(f"Unable to read brightness: {e}")
 
 
+# ─── tool: current_time ──────────────────────────────────────────────────
+
+@function_tool()
+async def current_time(context: RunContext) -> str:
+    """Tell the current date and local time."""
+    now = time.localtime()
+    formatted = time.strftime("%A, %d %B %Y at %I:%M %p", now)
+    return f"It is {formatted}, sir."
+
+
 SYSTEM_TOOLS = [
     system_status,
     battery_status,
@@ -217,6 +227,7 @@ SYSTEM_TOOLS = [
     shutdown,
     restart,
     hibernate,
+    current_time,
     volume_get,
     volume_set,
     volume_mute,

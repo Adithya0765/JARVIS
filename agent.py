@@ -37,11 +37,11 @@ class Assistant(Agent):
 
     async def on_enter(self) -> None:
         self._session_id = memory.mark_session_start()
-        context = memory.build_memory_context()
-        if context:
-            asyncio.create_task(self.update_instructions(f"{self.BASE_INSTRUCTIONS}\n\n{context}"))
         self._monitor_task = asyncio.create_task(
             run_system_monitor(self.session, self._session_id)
+        )
+        self.session.generate_reply(
+            instructions="Greet in one line, sir."
         )
 
     async def on_exit(self) -> None:
@@ -60,8 +60,6 @@ async def my_agent(ctx: agents.JobContext):
     session = AgentSession(
         llm=google.realtime.RealtimeModel(
             voice="Charon",
-            temperature=0.7,
-            top_k=20,
         )
     )
 
@@ -87,10 +85,6 @@ async def my_agent(ctx: agents.JobContext):
         @session.on("close")
         def on_close(_event):
             memory.mark_session_end(agent_instance._session_id)
-
-    await session.generate_reply(
-        instructions="Greet the user and await their first command, sir."
-    )
 
 
 if __name__ == "__main__":
