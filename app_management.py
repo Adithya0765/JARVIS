@@ -343,14 +343,7 @@ async def kill_process(
     raise ToolError("Specify either a PID or a process name to kill, sir.")
 
 
-# ─── tool: switch_window ─────────────────────────────────────────────────
-
-@function_tool()
-async def switch_window(
-    name: Annotated[str, Field(description="Window/app name")],
-    context: RunContext,
-) -> str:
-    """Bring window to foreground."""
+def _window_search(title_pattern: str, visible_only: bool = True) -> list[int]:
     import ctypes
     from ctypes import wintypes
 
@@ -361,21 +354,36 @@ async def switch_window(
 
     titles = []
     def _enum_callback(hwnd, _lparam):
-        if IsWindowVisible(hwnd):
-            length = GetWindowTextLength(hwnd)
-            if length > 0:
-                buf = ctypes.create_unicode_buffer(length + 1)
-                GetWindowText(hwnd, buf, length + 1)
-                if name.lower() in buf.value.lower():
-                    titles.append(hwnd)
+        if visible_only and not IsWindowVisible(hwnd):
+            return True
+        length = GetWindowTextLength(hwnd)
+        if length > 0:
+            buf = ctypes.create_unicode_buffer(length + 1)
+            GetWindowText(hwnd, buf, length + 1)
+            if title_pattern.lower() in buf.value.lower():
+                titles.append(hwnd)
         return True
 
     WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HANDLE, wintypes.LPARAM)
     EnumWindows(WNDENUMPROC(_enum_callback), 0)
+    return titles
 
-    if not titles:
-        raise ToolError(f"No visible window found matching '{name}', sir.")
-    for hwnd in titles:
+
+# ─── tool: switch_window ─────────────────────────────────────────────────
+
+@function_tool()
+async def switch_window(
+    name: Annotated[str, Field(description="Window/app name")],
+    context: RunContext,
+) -> str:
+    """Bring window to foreground."""
+    import ctypes
+    handles = _window_search(name, visible_only=True)
+    if not handles:
+        handles = _window_search(name, visible_only=False)
+    if not handles:
+        raise ToolError(f"No window found matching '{name}', sir.")
+    for hwnd in handles:
         ctypes.windll.user32.ShowWindow(hwnd, 9)
         ctypes.windll.user32.SetForegroundWindow(hwnd)
         return f"Switching to {name}, sir."
@@ -385,9 +393,21 @@ async def switch_window(
 # ─── tool: window_minimize ──────────────────────────────────────────────
 
 @function_tool()
-async def window_minimize(context: RunContext) -> str:
-    """Minimise active window."""
+async def window_minimize(
+    context: RunContext,
+    name: Annotated[str | None, Field(description="Window/app name")] = None,
+) -> str:
+    """Minimise a window by name, or active window if no name given."""
     import ctypes
+    if name:
+        handles = _window_search(name, visible_only=True)
+        if not handles:
+            handles = _window_search(name, visible_only=False)
+        if not handles:
+            raise ToolError(f"No window found matching '{name}', sir.")
+        for hwnd in handles:
+            ctypes.windll.user32.ShowWindow(hwnd, 6)
+        return f"Window '{name}' minimised, sir."
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     ctypes.windll.user32.ShowWindow(hwnd, 6)
     return "Window minimised, sir."
@@ -396,9 +416,21 @@ async def window_minimize(context: RunContext) -> str:
 # ─── tool: window_maximize ──────────────────────────────────────────────
 
 @function_tool()
-async def window_maximize(context: RunContext) -> str:
-    """Maximise active window."""
+async def window_maximize(
+    context: RunContext,
+    name: Annotated[str | None, Field(description="Window/app name")] = None,
+) -> str:
+    """Maximise a window by name, or active window if no name given."""
     import ctypes
+    if name:
+        handles = _window_search(name, visible_only=True)
+        if not handles:
+            handles = _window_search(name, visible_only=False)
+        if not handles:
+            raise ToolError(f"No window found matching '{name}', sir.")
+        for hwnd in handles:
+            ctypes.windll.user32.ShowWindow(hwnd, 3)
+        return f"Window '{name}' maximised, sir."
     hwnd = ctypes.windll.user32.GetForegroundWindow()
     ctypes.windll.user32.ShowWindow(hwnd, 3)
     return "Window maximised, sir."
@@ -407,12 +439,36 @@ async def window_maximize(context: RunContext) -> str:
 # ─── tool: window_close ─────────────────────────────────────────────────
 
 @function_tool()
-async def window_close(context: RunContext) -> str:
-    """Close active window."""
+async def window_close(
+    context: RunContext,
+    name: Annotated[str | None, Field(description="Window/app name")] = None,
+) -> str:
+    """Close a window by name, or active window if no name given."""
     import ctypes
-    hwnd = ctypes.windll.user32.GetForegroundWindow()
-    ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
-    return "Closing window, sir."
+    if not name:
+        hwnd = ctypes.windll.user32.GetForegroundWindow()
+        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+        return "Closing window, sir."
+
+    handles = _window_search(name, visible_only=True)
+    if not handles:
+        handles = _window_search(name, visible_only=False)
+    if not handles:
+        killed = []
+        for p in psutil.process_iter(["pid", "name"]):
+            try:
+                if name.lower() in p.info["name"].lower():
+                    p.terminate()
+                    killed.append(f"{p.info['name']} ({p.info['pid']})")
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        if killed:
+            return f"Closed '{name}' by terminating {len(killed)} process{'es' if len(killed) > 1 else ''}, sir."
+        raise ToolError(f"No window or process found matching '{name}', sir.")
+
+    for hwnd in handles:
+        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)
+    return f"Closing '{name}', sir."
 
 
 APP_TOOLS = [

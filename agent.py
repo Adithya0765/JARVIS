@@ -43,9 +43,12 @@ class Assistant(Agent):
         self._monitor_task = asyncio.create_task(
             run_system_monitor(self.session, self._session_id)
         )
-        self.session.generate_reply(
-            instructions="Greet in one line, sir."
-        )
+        try:
+            self.session.generate_reply(
+                instructions="Greet in one line, sir."
+            )
+        except Exception:
+            pass
 
     async def on_exit(self) -> None:
         if self._monitor_task:

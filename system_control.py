@@ -2,6 +2,7 @@ import asyncio
 import ctypes
 import os
 import subprocess
+import sys
 import time
 from typing import Annotated
 
@@ -94,6 +95,14 @@ async def shutdown(context: RunContext) -> str:
 
 
 # ─── tool: restart ────────────────────────────────────────────────────────
+
+@function_tool()
+async def shutdown(context: RunContext) -> str:
+    """Shut down the system. JARVIS will exit with it."""
+    subprocess.Popen(["shutdown", "/s", "/t", "3"], close_fds=True)
+    asyncio.get_event_loop().call_later(2, sys.exit, 0)
+    return "Shutting down in 3 seconds, sir."
+
 
 @function_tool()
 async def restart(context: RunContext) -> str:
