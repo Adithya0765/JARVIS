@@ -13,11 +13,13 @@ from app_management import APP_TOOLS
 from file_operations import FILE_TOOLS
 from google.genai.types import ThinkingConfig
 from memory import MemoryService
+from push_to_talk import PushToTalk
 from system_control import SYSTEM_TOOLS, run_system_monitor
 
 load_dotenv(".env.local")
 
 memory = MemoryService()
+push_to_talk = PushToTalk(key="`")
 
 
 class Assistant(Agent):
@@ -41,12 +43,14 @@ class Assistant(Agent):
     async def on_enter(self) -> None:
         self._session_id = memory.mark_session_start()
         self._monitor_task = asyncio.create_task(
-            run_system_monitor(self.session, self._session_id)
+            run_system_monitor(self.session)
         )
         try:
-            self.session.generate_reply(
-                instructions="Greet in one line, sir."
-            )
+            mem_context = memory.build_memory_context()
+            instructions = "Greet in one line, sir."
+            if mem_context:
+                instructions = f"{mem_context}\n{instructions}"
+            self.session.generate_reply(instructions=instructions)
         except Exception:
             pass
 
@@ -62,6 +66,8 @@ server = AgentServer()
 async def my_agent(ctx: agents.JobContext):
     if not memory._running:
         await memory.start()
+
+    push_to_talk.start()
 
     session = AgentSession(
         llm=google.realtime.RealtimeModel(
@@ -93,6 +99,7 @@ async def my_agent(ctx: agents.JobContext):
         @session.on("close")
         def on_close(_event):
             memory.mark_session_end(agent_instance._session_id)
+            push_to_talk.stop()
 
 
 if __name__ == "__main__":

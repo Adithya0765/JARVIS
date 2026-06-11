@@ -47,9 +47,12 @@ def _get_audio_interface():
 @function_tool()
 async def system_status(context: RunContext) -> str:
     """System status: OS, uptime, CPU, RAM, disk."""
-    cpu = psutil.cpu_percent(interval=0.5)
-    mem = psutil.virtual_memory()
-    disk = psutil.disk_usage("/")
+    loop = asyncio.get_event_loop()
+    cpu, mem, disk = await asyncio.gather(
+        loop.run_in_executor(None, psutil.cpu_percent, 0.5),
+        loop.run_in_executor(None, psutil.virtual_memory),
+        loop.run_in_executor(None, psutil.disk_usage, "C:\\"),
+    )
     boot = psutil.boot_time()
     uptime_seconds = time.time() - boot
     uptime_hours = uptime_seconds // 3600
@@ -89,25 +92,19 @@ async def lock_screen(context: RunContext) -> str:
 
 @function_tool()
 async def shutdown(context: RunContext) -> str:
-    """Shut down the system."""
-    subprocess.Popen(["shutdown", "/s", "/t", "3"], close_fds=True)
-    return "Shutting down in 3 seconds, sir."
-
-
-# ─── tool: restart ────────────────────────────────────────────────────────
-
-@function_tool()
-async def shutdown(context: RunContext) -> str:
     """Shut down the system. JARVIS will exit with it."""
     subprocess.Popen(["shutdown", "/s", "/t", "3"], close_fds=True)
     asyncio.get_event_loop().call_later(2, sys.exit, 0)
     return "Shutting down in 3 seconds, sir."
 
 
+# ─── tool: restart ────────────────────────────────────────────────────────
+
 @function_tool()
 async def restart(context: RunContext) -> str:
     """Restart the system."""
     subprocess.Popen(["shutdown", "/r", "/t", "3"], close_fds=True)
+    asyncio.get_event_loop().call_later(2, sys.exit, 0)
     return "Restarting in 3 seconds, sir."
 
 
@@ -117,6 +114,7 @@ async def restart(context: RunContext) -> str:
 async def hibernate(context: RunContext) -> str:
     """Hibernate the system."""
     ctypes.windll.powrprof.SetSuspendState(1, 1, 0)
+    asyncio.get_event_loop().call_later(1, sys.exit, 0)
     return "Hibernating, sir."
 
 
@@ -235,8 +233,9 @@ SYSTEM_TOOLS = [
 
 # ─── proactive system monitor ────────────────────────────────────────────
 
-async def run_system_monitor(session, ctx) -> None:
+async def run_system_monitor(session) -> None:
     check_interval = 60
+    loop = asyncio.get_event_loop()
     while True:
         await asyncio.sleep(check_interval)
         try:
@@ -255,14 +254,14 @@ async def run_system_monitor(session, ctx) -> None:
                     "Consider closing some applications."
                 )
 
-            disk = psutil.disk_usage("/")
+            disk = psutil.disk_usage("C:\\")
             if disk.percent > 90:
                 alerts.append(
                     f"Disk usage is at {disk.percent} percent, sir. "
                     f"Only {disk.free // (1024**3)} gigabytes remain."
                 )
 
-            cpu = psutil.cpu_percent(interval=1.0)
+            cpu = await loop.run_in_executor(None, psutil.cpu_percent, 0.0)
             if cpu > 90:
                 alerts.append(
                     f"CPU utilisation is at {cpu} percent, sir. "
@@ -270,8 +269,11 @@ async def run_system_monitor(session, ctx) -> None:
                 )
 
             for alert in alerts:
-                await session.say(alert, allow_interruptions=True)
-                await asyncio.sleep(1.0)
+                try:
+                    await session.say(alert, allow_interruptions=True)
+                    await asyncio.sleep(1.0)
+                except Exception:
+                    pass
 
         except asyncio.CancelledError:
             raise

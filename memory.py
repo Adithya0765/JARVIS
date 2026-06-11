@@ -28,7 +28,12 @@ class MemoryService:
             self._genai_client = genai.Client(api_key=api_key)
         else:
             api_key_from_env = os.environ.get("GOOGLE_API_KEY", "")
-            self._genai_client = genai.Client(api_key=api_key_from_env) if api_key_from_env else None
+            if api_key_from_env:
+                self._genai_client = genai.Client(api_key=api_key_from_env)
+            else:
+                self._genai_client = None
+                import warnings
+                warnings.warn("No GOOGLE_API_KEY set. Memory extraction is disabled.")
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:

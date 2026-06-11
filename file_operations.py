@@ -56,7 +56,7 @@ async def list_directory(
         lines.append("")
         lines.append("Directories:")
         for f in folders[:30]:
-            lines.append(f"  📁 {f.name}")
+            lines.append(f"  {f.name}/")
     if files:
         lines.append("")
         lines.append("Files:")
@@ -137,8 +137,11 @@ async def search_files(
 
     results = []
     q = query.lower()
+    start = time.time()
     try:
         for entry in root.rglob("*"):
+            if time.time() - start > 10:
+                break
             if entry.is_file() and q in entry.name.lower():
                 try:
                     rel = entry.relative_to(root)
@@ -331,6 +334,17 @@ async def delete_item(
 ) -> str:
     """Delete file or folder."""
     p = _safe_path(path)
+
+    system_protected = [
+        Path(os.environ.get("SystemRoot", "C:\\Windows")).resolve(),
+        Path(os.environ.get("ProgramFiles", "C:\\Program Files")).resolve(),
+        Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)")).resolve(),
+        Path(os.environ.get("SystemDrive", "C:\\")).resolve(),
+        Path.home().resolve(),
+    ]
+    for protected in system_protected:
+        if p == protected or protected in p.parents:
+            raise ToolError(f"I cannot delete files in {protected.name}, sir. That could damage the system.")
 
     if p.is_dir():
         shutil.rmtree(p)
